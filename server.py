@@ -5,13 +5,14 @@ from datetime import datetime, timedelta
 import time
 import threading
 import sqlite3
+import os
 
 app = Flask(__name__)
 CORS(app)
 
 DB_NAME = 'iss_data.db'
-UPDATE_INTERVAL = 1  # 1 second
-MAX_DAYS = 3  # Keep 3 days of data
+UPDATE_INTERVAL = 1  # seconds
+MAX_DAYS = 3         # Keep last 3 days of data
 
 # ------------------ DATABASE ------------------ #
 def init_database():
@@ -23,6 +24,7 @@ def init_database():
             latitude REAL NOT NULL,
             longitude REAL NOT NULL,
             altitude REAL NOT NULL,
+            velocity REAL,
             timestamp TEXT NOT NULL,
             day TEXT NOT NULL,
             created_at DATETIME DEFAULT CURRENT_TIMESTAMP
@@ -33,32 +35,32 @@ def init_database():
     conn.close()
     print("✓ Database initialized")
 
+# ------------------ FETCH & STORE ------------------ #
 def fetch_iss_position():
     try:
-        response = requests.get('http://api.open-notify.org/iss-now.json', timeout=5)
+        response = requests.get('https://api.wheretheiss.at/v1/satellites/25544', timeout=5)
         data = response.json()
-        if data['message'] == 'success':
-            timestamp = datetime.utcfromtimestamp(int(data['timestamp']))
-            position = data['iss_position']
-            return {
-                'latitude': float(position['latitude']),
-                'longitude': float(position['longitude']),
-                'altitude': 408.0,
-                'timestamp': timestamp.strftime('%Y-%m-%d %H:%M:%S'),
-                'day': timestamp.strftime('%Y-%m-%d')
-            }
+        timestamp = datetime.utcfromtimestamp(int(data['timestamp']))
+        return {
+            'latitude': data['latitude'],
+            'longitude': data['longitude'],
+            'altitude': data['altitude'],
+            'velocity': data.get('velocity', None),
+            'timestamp': timestamp.strftime('%Y-%m-%d %H:%M:%S'),
+            'day': timestamp.strftime('%Y-%m-%d')
+        }
     except Exception as e:
         print(f"Error fetching ISS position: {e}")
-    return None
+        return None
 
 def save_to_database(position):
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         cursor.execute('''
-            INSERT INTO iss_positions (latitude, longitude, altitude, timestamp, day)
-            VALUES (?, ?, ?, ?, ?)
-        ''', (position['latitude'], position['longitude'], position['altitude'], position['timestamp'], position['day']))
+            INSERT INTO iss_positions (latitude, longitude, altitude, velocity, timestamp, day)
+            VALUES (?, ?, ?, ?, ?, ?)
+        ''', (position['latitude'], position['longitude'], position['altitude'], position['velocity'], position['timestamp'], position['day']))
         conn.commit()
         conn.close()
         return True
@@ -126,10 +128,10 @@ def get_last_3_days():
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        cursor.execute('SELECT latitude, longitude, altitude, timestamp, day FROM iss_positions ORDER BY timestamp ASC')
+        cursor.execute('SELECT latitude, longitude, altitude, velocity, timestamp, day FROM iss_positions ORDER BY timestamp ASC')
         rows = cursor.fetchall()
         conn.close()
-        data = [{'latitude': r[0],'longitude': r[1],'altitude': r[2],'ts_utc': r[3],'day': r[4]} for r in rows]
+        data = [{'latitude': r[0],'longitude': r[1],'altitude': r[2],'velocity': r[3],'ts_utc': r[4],'day': r[5]} for r in rows]
         return jsonify(data)
     except Exception as e:
         print(f"Error fetching data: {e}")
@@ -140,11 +142,11 @@ def get_current():
     try:
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
-        cursor.execute('SELECT latitude, longitude, altitude, timestamp, day FROM iss_positions ORDER BY timestamp DESC LIMIT 1')
+        cursor.execute('SELECT latitude, longitude, altitude, velocity, timestamp, day FROM iss_positions ORDER BY timestamp DESC LIMIT 1')
         row = cursor.fetchone()
         conn.close()
         if row:
-            return jsonify({'latitude': row[0],'longitude': row[1],'altitude': row[2],'ts_utc': row[3],'day': row[4]})
+            return jsonify({'latitude': row[0],'longitude': row[1],'altitude': row[2],'velocity': row[3],'ts_utc': row[4],'day': row[5]})
         return jsonify({'error': 'No data available'}), 404
     except Exception as e:
         print(f"Error fetching current position: {e}")
@@ -162,7 +164,15 @@ def get_stats():
         conn.close()
         total_hours = total_count / 3600
         total_days = total_hours / 24
-        return jsonify({'total_records': total_count,'total_hours': round(total_hours,2),'total_days': round(total_days,2),'records_per_day': day_counts,'collection_rate': f'{UPDATE_INTERVAL} second per request','max_retention_days': MAX_DAYS,'records_per_table_page': 86400})
+        return jsonify({
+            'total_records': total_count,
+            'total_hours': round(total_hours,2),
+            'total_days': round(total_days,2),
+            'records_per_day': day_counts,
+            'collection_rate': f'{UPDATE_INTERVAL} second per request',
+            'max_retention_days': MAX_DAYS,
+            'records_per_table_page': 86400
+        })
     except Exception as e:
         print(f"Error getting stats: {e}")
         return jsonify({'error': 'Unable to fetch stats'}), 500
@@ -181,9 +191,9 @@ def get_all_records():
         conn = sqlite3.connect(DB_NAME)
         cursor = conn.cursor()
         if day_filter:
-            cursor.execute('SELECT latitude, longitude, altitude, timestamp, day, id FROM iss_positions WHERE day = ? ORDER BY timestamp DESC', (day_filter,))
+            cursor.execute('SELECT latitude, longitude, altitude, velocity, timestamp, day, id FROM iss_positions WHERE day = ? ORDER BY timestamp DESC', (day_filter,))
         else:
-            cursor.execute('SELECT latitude, longitude, altitude, timestamp, day, id FROM iss_positions ORDER BY timestamp DESC')
+            cursor.execute('SELECT latitude, longitude, altitude, velocity, timestamp, day, id FROM iss_positions ORDER BY timestamp DESC')
         all_rows = cursor.fetchall()
         total_records = len(all_rows)
         start = (page - 1) * per_page
@@ -192,7 +202,7 @@ def get_all_records():
         cursor.execute('SELECT DISTINCT day FROM iss_positions ORDER BY day DESC')
         days = [row[0] for row in cursor.fetchall()]
         conn.close()
-        data = [{'id': r[5],'latitude': r[0],'longitude': r[1],'altitude': r[2],'ts_utc': r[3],'day': r[4]} for r in rows]
+        data = [{'id': r[6],'latitude': r[0],'longitude': r[1],'altitude': r[2],'velocity': r[3],'ts_utc': r[4],'day': r[5]} for r in rows]
         return jsonify({'records': data,'total': total_records,'page': page,'per_page': per_page,'total_pages': (total_records + per_page - 1)//per_page,'available_days': days})
     except Exception as e:
         print(f"Error fetching all records: {e}")
@@ -204,6 +214,6 @@ if __name__ == '__main__':
     if get_record_count() == 0:
         print("Generating sample data for testing...")
     threading.Thread(target=background_update, daemon=True).start()
-    import os
     port = int(os.environ.get('PORT', 10000))
     app.run(host='0.0.0.0', port=port, debug=False)
+
