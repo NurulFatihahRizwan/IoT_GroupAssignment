@@ -4,12 +4,12 @@ Real-time International Space Station orbital tracking system with interactive v
 
 ## Features
 
-- 🛰️ Live ISS position tracking on interactive map
-- 📊 Real-time charts for latitude, longitude, and altitude
-- 📍 User geolocation
-- ⏯️ Playback controls for historical data
-- 📈 3-day orbital data with pagination
-- 🌍 Dark-themed space UI
+- Live ISS position tracking on interactive map
+- Real-time charts for latitude, longitude, and altitude
+- User geolocation
+- Playback controls for historical data
+- 3-day orbital data with pagination
+- Dark-themed space UI
 
 ## Deployment on Render
 
